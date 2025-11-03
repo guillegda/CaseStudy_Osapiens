@@ -8,16 +8,14 @@ from email.mime.multipart import MIMEMultipart
 from email.mime.text import MIMEText
 from typing import List, Dict, Any
 
-# --- CONFIGURACIÓN INICIAL Y LOGGING ---
 load_dotenv()
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 
-# --- VARIABLES DE CONFIGURACIÓN ---
 # API
-USE_V1 = True # Cambiar a False en la entrevista para probar el V2
+USE_V1 = True # change to False for using V2
 API_KEY_V1 = os.getenv("API_KEY_V1")
 API_KEY_V2 = os.getenv("API_KEY_V2")
-BASE_URL = os.getenv("API_BASE_URL", "http://localhost:8000/api") # Usar variable de entorno si existe
+BASE_URL = os.getenv("API_BASE_URL", "http://localhost:8000/api")
 
 # Email
 EMAIL_TO = os.getenv("EMAIL_TO")
@@ -25,10 +23,8 @@ SMTP_SERVER = os.getenv("SMTP_SERVER")
 SMTP_PORT = int(os.getenv("SMTP_PORT", 587))
 SMTP_USER = os.getenv("SMTP_USER")
 SMTP_PASSWORD = os.getenv("SMTP_PASSWORD")
-EMAIL_FROM = SMTP_USER # El remitente es el usuario de autenticación SMTP
+EMAIL_FROM = SMTP_USER
 
-# ----------------------------------------------------------------------
-# --- FUNCIONES DEL PROCESO ---
 # ----------------------------------------------------------------------
 
 def fetch_data(use_v1=True) -> List[Dict[str, Any]]:
@@ -91,24 +87,24 @@ def calculate_kpis(tickets: List[Dict[str, Any]]) -> Dict[str, Any]:
         status = ticket.get("Status", "").lower()
         agent_name = ticket.get("Agent")
 
-        # Conteo de tickets por agente
+        # tickets per agent count
         if agent_name:
             agents[agent_name] = agents.get(agent_name, 0) + 1
             unique_agents.add(agent_name)
 
-        # Cálculo de tiempo de resolución y CSAT
+        # resolved time only for resolved tickets and CSAT if available
         if status == "resolved":
             resolved_tickets_count += 1
             
             created_dt = ticket.get("Create Date")
             resolved_dt = ticket.get("Resolved Date")
             
-            # Asumimos que para V1 son objetos datetime
+            # assuming dates are in ISO format strings
             if isinstance(created_dt, datetime) and isinstance(resolved_dt, datetime):
                 resolution_time = resolved_dt - created_dt
                 total_resolution_time_seconds += resolution_time.total_seconds()
             
-            # Obtener CSAT
+            # obtain CSAT
             csat_str = ticket.get("CSAT")
             if csat_str and isinstance(csat_str, str) and csat_str.endswith('%'):
                 try:
@@ -117,23 +113,23 @@ def calculate_kpis(tickets: List[Dict[str, Any]]) -> Dict[str, Any]:
                 except ValueError:
                     pass
 
-    # --- Cálculo final de KPIs ---
+    # --- KPIs ---
     
-    # A. Tiempo promedio de resolución
+    # Average Resolution Time
     if resolved_tickets_count > 0:
         avg_resolution_seconds = total_resolution_time_seconds / resolved_tickets_count
         avg_resolution_time = str(timedelta(seconds=round(avg_resolution_seconds)))
     else:
         avg_resolution_time = "N/A (No resolved tickets)"
 
-    # B. Tickets por agente (Promedio)
+    # Average Tickets per Agent
     num_unique_agents = len(unique_agents)
     tickets_per_agent = round(total_tickets / num_unique_agents, 2) if num_unique_agents > 0 else "N/A"
 
-    # C. % de tickets resueltos
+    # Percentage of Resolved Tickets
     pct_resolved = round((resolved_tickets_count / total_tickets * 100), 2)
 
-    # D. CSAT
+    # Customer satisfaction score (CSAT)
     total_csat_records = len(csat_scores)
     avg_csat_score = round(sum(csat_scores) / total_csat_records, 2) if total_csat_records > 0 else "N/A"
 
@@ -148,7 +144,7 @@ def calculate_kpis(tickets: List[Dict[str, Any]]) -> Dict[str, Any]:
 
 def generate_report(kpis: dict) -> str:
     """
-    Genera un informe HTML formateado a partir del diccionario de KPIs.
+    Generates an HTML report based on the calculated KPIs.
     """
     report_html = f"""
     <html>
@@ -186,19 +182,19 @@ def generate_report(kpis: dict) -> str:
 
 def send_email(report_html: str):
     """
-    Se conecta al servidor SMTP y envía el reporte HTML utilizando la configuración de .env.
+    Connects to the SMTP server and sends the KPI report via email.
     """
     if not all([EMAIL_TO, SMTP_SERVER, SMTP_USER, SMTP_PASSWORD]):
         logging.error("Faltan variables de entorno de configuración de correo (EMAIL_TO, SMTP_SERVER, etc.). No se puede enviar el correo.")
         return
 
-    # Construir el mensaje base
+    # build email base message
     msg = MIMEMultipart("alternative")
     msg["Subject"] = f"Support KPI Report - {datetime.now().strftime('%Y-%m-%d')}"
     msg["From"] = EMAIL_FROM
     msg["To"] = EMAIL_TO
 
-    # Adjuntar el contenido HTML
+    # add HTML part
     html_part = MIMEText(report_html, "html")
     msg.attach(html_part)
 
@@ -220,26 +216,21 @@ def send_email(report_html: str):
 
 
 # ----------------------------------------------------------------------
-# --- PUNTO DE ENTRADA ---
-# ----------------------------------------------------------------------
 
 if __name__ == "__main__":
-    logging.info("--- Starting Report Generation Process ---")
-    
-    # 1. Ingesta de datos
+    logging.info("~~~ Starting Report Generation Process ~~~")
+
     tickets = fetch_data(use_v1=USE_V1)
     
     if tickets:
-        # 2. Cálculo de KPIs
+
         kpis = calculate_kpis(tickets)
         logging.info("[*] KPIs Calculated.")
-        
-        # 3. Generación del Reporte (HTML)
+
         report = generate_report(kpis)
-        
-        # 4. Envío del Correo
+
         send_email(report)
     else:
         logging.info("[INFO] No tickets found to generate the report. Process Terminated.")
 
-    logging.info("--- Process Finished ---")
+    logging.info("~~~ Process Finished ~~~")
