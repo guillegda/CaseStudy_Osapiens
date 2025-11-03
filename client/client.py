@@ -29,7 +29,7 @@ EMAIL_FROM = SMTP_USER
 
 def fetch_data(use_v1=True) -> List[Dict[str, Any]]:
     """
-    Realiza una solicitud GET al endpoint /v1/tickets (o v2) para obtener datos de tickets.
+    Get requests to /v1/tickets (or v2) endpoint to fetch ticket data.
     """
     if use_v1:
         api_key = API_KEY_V1
@@ -39,34 +39,61 @@ def fetch_data(use_v1=True) -> List[Dict[str, Any]]:
         endpoint = "v2"
 
     if not api_key:
-        logging.error("La clave API para %s no está definida. Verifique su archivo .env.", endpoint)
+        logging.error("API Key for %s is not defined. Please check your .env file.", endpoint)
         return []
 
     url = f"{BASE_URL}/{endpoint}/tickets"
     headers = {"X-API-KEY": api_key}
 
-    logging.info("[*] Solicitando datos de: %s", url)
+    logging.info("[*] Requesting data from: %s", url)
 
     try:
         response = requests.get(url, headers=headers, timeout=10)
         response.raise_for_status() # Handles HTTP errors (4xx or 5xx)
         
         tickets = response.json()
-        logging.info("[*] Éxito: %s tickets obtenidos.", len(tickets))
+        logging.info("[*] Success: %s tickets obtained.", len(tickets))
+        logging.info("[*] Tickets sample: %s", tickets[:2])
         return tickets
 
     except requests.exceptions.HTTPError:
-        logging.error("Fallo en la solicitud HTTP. Código: %s. Detalles: %s", response.status_code, response.text)
+        logging.error("HTTP request failed. Code: %s. Ditails: %s", response.status_code, response.text)
         return []
     except requests.exceptions.RequestException as e:
-        logging.error("Fallo de conexión o tiempo de espera agotado: %s", e)
+        logging.error("Connection failed or timeout: %s", e)
         return []
 
+def safe_date_parse(date_value: Any) -> datetime | None:
+    """
+    transform various date formats into a datetime object safely.
+    V1 uses ISO 8601 strings, V2 uses Unix Timestamps.
+    """
+    if not date_value:
+        return None
+
+    # Unix Timestamp (Integer) (V2)
+    if isinstance(date_value, int):
+        try:
+            return datetime.fromtimestamp(date_value)
+        except Exception as e:
+            logging.warning("Error transforming Unix Timestamp %s. Error: %s", date_value, e)
+            return None
+
+    # ISO 8601 (String) (V1)
+    if isinstance(date_value, str):
+        try:
+            return datetime.fromisoformat(date_value)
+        except ValueError:
+            try:
+                return datetime.fromisoformat(date_value.replace('Z', '+00:00'))
+            except Exception as e:
+                logging.warning(f"Date format STR not recognised for {date_value}. Error: {e}")
+                return None
+
+    return None
 
 def calculate_kpis(tickets: List[Dict[str, Any]]) -> Dict[str, Any]:
-    """
-    Calcula las métricas de negocio (KPIs) a partir de la lista de tickets.
-    """
+
     total_tickets = len(tickets)
     if total_tickets == 0:
         return {
@@ -92,15 +119,16 @@ def calculate_kpis(tickets: List[Dict[str, Any]]) -> Dict[str, Any]:
             agents[agent_name] = agents.get(agent_name, 0) + 1
             unique_agents.add(agent_name)
 
-        # resolved time only for resolved tickets and CSAT if available
         if status == "resolved":
             resolved_tickets_count += 1
             
-            created_dt = ticket.get("Create Date")
-            resolved_dt = ticket.get("Resolved Date")
-            
-            # assuming dates are in ISO format strings
-            if isinstance(created_dt, datetime) and isinstance(resolved_dt, datetime):
+            created_value = ticket.get("Create Date")
+            resolved_value = ticket.get("Resolved Date")
+
+            created_dt = safe_date_parse(created_value)
+            resolved_dt = safe_date_parse(resolved_value)
+
+            if created_dt and resolved_dt:
                 resolution_time = resolved_dt - created_dt
                 total_resolution_time_seconds += resolution_time.total_seconds()
             
@@ -185,7 +213,7 @@ def send_email(report_html: str):
     Connects to the SMTP server and sends the KPI report via email.
     """
     if not all([EMAIL_TO, SMTP_SERVER, SMTP_USER, SMTP_PASSWORD]):
-        logging.error("Faltan variables de entorno de configuración de correo (EMAIL_TO, SMTP_SERVER, etc.). No se puede enviar el correo.")
+        logging.error("Missing email configuration environment variables (EMAIL_TO, SMTP_SERVER, etc.). Cannot send email.")
         return
 
     # build email base message
@@ -198,21 +226,21 @@ def send_email(report_html: str):
     html_part = MIMEText(report_html, "html")
     msg.attach(html_part)
 
-    logging.info("[*] Intentando conectar a %s:%s...", SMTP_SERVER, SMTP_PORT)
+    logging.info("[*] Trying to reach connection to %s:%s...", SMTP_SERVER, SMTP_PORT)
     try:
         with smtplib.SMTP(SMTP_SERVER, SMTP_PORT) as server:
             server.starttls()
-            server.login(SMTP_USER, SMTP_PASSWORD.replace(" ", "")) # Limpiar espacios de App Password
+            server.login(SMTP_USER, SMTP_PASSWORD.replace(" ", "")) # just in case clean App Password spaces: formatting issues
             server.sendmail(EMAIL_FROM, EMAIL_TO, msg.as_string())
         
-        logging.info("[SUCCESS] Reporte de KPIs enviado exitosamente a %s.",EMAIL_TO)
+        logging.info("[SUCCESS] KPIs succesfully sent to %s.",EMAIL_TO)
 
     except smtplib.SMTPAuthenticationError:
-        logging.error("[FAILURE] Error de autenticación SMTP. Verifique SMTP_USER y la Contraseña de Aplicación.")
+        logging.error("[FAILURE] SMTP Auth Error. Verify SMTP_USER and app password.")
     except smtplib.SMTPException as e:
-        logging.error("[FAILURE] Error al enviar el correo SMTP: %s", e)
+        logging.error("[FAILURE] Error sending SMTP maill: %s", e)
     except Exception as e:
-        logging.error("[FAILURE] Error desconocido durante el envío del correo: %s", e)
+        logging.error("[FAILURE] Unknown Error during maill sending: %s", e)
 
 
 # ----------------------------------------------------------------------
