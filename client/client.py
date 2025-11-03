@@ -12,7 +12,7 @@ load_dotenv()
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 
 # API
-USE_V1 = True # change to False for using V2
+USE_V1 = False # change to False for using V2
 API_KEY_V1 = os.getenv("API_KEY_V1")
 API_KEY_V2 = os.getenv("API_KEY_V2")
 BASE_URL = os.getenv("API_BASE_URL", "http://localhost:8000/api")
@@ -87,7 +87,7 @@ def safe_date_parse(date_value: Any) -> datetime | None:
             try:
                 return datetime.fromisoformat(date_value.replace('Z', '+00:00'))
             except Exception as e:
-                logging.warning(f"Date format STR not recognised for {date_value}. Error: {e}")
+                logging.warning("Date format STR not recognised for %s. Error:  %s", date_value, e)
                 return None
 
     return None
@@ -133,13 +133,27 @@ def calculate_kpis(tickets: List[Dict[str, Any]]) -> Dict[str, Any]:
                 total_resolution_time_seconds += resolution_time.total_seconds()
             
             # obtain CSAT
-            csat_str = ticket.get("CSAT")
-            if csat_str and isinstance(csat_str, str) and csat_str.endswith('%'):
+            csat_raw = ticket.get("CSAT")
+            if csat_raw:
+                csat_str = str(csat_raw).strip() 
+                if csat_str.endswith('%'):
+                    clean_score_str = csat_str.rstrip('%').strip() # remove % sign and extra spaces if any from string
+                else:
+                    clean_score_str = csat_str
                 try:
-                    score = int(csat_str.strip('%'))
-                    csat_scores.append(score)
+                    #from string to float to int
+                    score = float(clean_score_str)
+                    score_int = int(score)
+
+                    # Validate CSAT range
+                    if 0 <= score_int <= 100:
+                        csat_scores.append(score_int)
+                    else:
+                        logging.warning("CSAT out of range (%s) for ticket ID: %s", score_int, ticket.get("TicketID", "N/A"))
+                        
                 except ValueError:
-                    pass
+                    # This captures cases where clean_score_str is not a number (e.g., "Bad", "Check")
+                    logging.warning("Non-numeric CSAT value ('%s') ignored for ticket ID: %s", csat_raw, ticket.get("TicketID", "N/A"))
 
     # --- KPIs ---
     
@@ -186,7 +200,7 @@ def generate_report(kpis: dict) -> str:
             </style>
         </head>
         <body>
-            <h2>Technical Support KPI Report</h2>
+            <h2>Osapiens Technical Support KPI Report</h2>
             <p>Report generated on {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}.</p>
             
             <h3>Key Metrics</h3>
@@ -205,10 +219,26 @@ def generate_report(kpis: dict) -> str:
         </body>
     </html>
     """
-    return report_html
+    report_text = f"""
+    [Osapiens Technical Support KPI Report]
+    Generated on: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}
+
+    Key Metrics:
+    ---------------------------
+    * Average resolution time: {kpis.get('Average resolution time')}
+    * % of Resolved Tickets: {kpis.get('Percentage of resolved tickets')}%
+    * CSAT (Customer Satisfaction): {kpis.get('Customer satisfaction score (CSAT)')}
+    * Tickets per Agent (Average): {kpis.get('Tickets per agent (Avg)')}
+
+    Agent Workload Details:
+    -----------------------------------------
+    {''.join(f'- {agent}: {count} tickets\n' for agent, count in kpis.get('Tickets per agent (Detail)', {}).items())}
+    """
+    # Change the return type to include both
+    return {"html": report_html, "text": report_text}
 
 
-def send_email(report_html: str):
+def send_email(report_parts: str):
     """
     Connects to the SMTP server and sends the KPI report via email.
     """
@@ -218,18 +248,22 @@ def send_email(report_html: str):
 
     # build email base message
     msg = MIMEMultipart("alternative")
-    msg["Subject"] = f"Support KPI Report - {datetime.now().strftime('%Y-%m-%d')}"
+    msg["Subject"] = f"Osapiens Support KPI Report - {datetime.now().strftime('%Y-%m-%d')}"
     msg["From"] = EMAIL_FROM
     msg["To"] = EMAIL_TO
 
-    # add HTML part
-    html_part = MIMEText(report_html, "html")
+    # Add text part first (Standard practice: least complex part first)
+    text_part = MIMEText(report_parts["text"], "plain") # 'plain' text as fallback
+    msg.attach(text_part)
+
+    # Add HTML part second
+    html_part = MIMEText(report_parts["html"], "html")
     msg.attach(html_part)
 
     logging.info("[*] Trying to reach connection to %s:%s...", SMTP_SERVER, SMTP_PORT)
     try:
         with smtplib.SMTP(SMTP_SERVER, SMTP_PORT) as server:
-            server.starttls()
+            server.starttls() # elevate to secure connection
             server.login(SMTP_USER, SMTP_PASSWORD.replace(" ", "")) # just in case clean App Password spaces: formatting issues
             server.sendmail(EMAIL_FROM, EMAIL_TO, msg.as_string())
         
